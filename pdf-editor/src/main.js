@@ -27,6 +27,7 @@ let state = {
   dragStartY: 0,
   dragStartBlockX: 0,
   dragStartBlockY: 0,
+  isRendering: false, // Guard to prevent concurrent renders
 };
 
 function updateSelectedBlock() {
@@ -185,65 +186,69 @@ function updateOverlay() {
 }
 
 async function renderPage() {
-  if (!pdfDoc) return;
+  if (!pdfDoc || state.isRendering) return; // Guard against concurrent renders
+  
+  state.isRendering = true;
+  try {
+    const page = await pdfDoc.getPage(currentPage);
+    // Text coordinates from getTextContent() are ALWAYS in original PDF space (scale 1.0)
+    state.viewport = page.getViewport({ scale: 1.0 });
+    const scale = Math.min(2, 1000 / state.viewport.width);
+    state.renderViewport = page.getViewport({ scale });
 
-  const page = await pdfDoc.getPage(currentPage);
-  // Text coordinates from getTextContent() are ALWAYS in original PDF space (scale 1.0)
-  state.viewport = page.getViewport({ scale: 1.0 });
-  const scale = Math.min(2, 1000 / state.viewport.width);
-  state.renderViewport = page.getViewport({ scale });
+    const canvas = document.getElementById('pdf-canvas');
+    const overlay = document.getElementById('text-overlay');
 
-  const canvas = document.getElementById('pdf-canvas');
-  const overlay = document.getElementById('text-overlay');
+    canvas.width = state.renderViewport.width;
+    canvas.height = state.renderViewport.height;
+    overlay.style.width = `${state.renderViewport.width}px`;
+    overlay.style.height = `${state.renderViewport.height}px`;
+    overlay.innerHTML = '';
+    overlay.style.pointerEvents = 'none';
 
-  canvas.width = state.renderViewport.width;
-  canvas.height = state.renderViewport.height;
-  overlay.style.width = `${state.renderViewport.width}px`;
-  overlay.style.height = `${state.renderViewport.height}px`;
-  overlay.innerHTML = '';
-  overlay.style.pointerEvents = 'none';
+    const context = canvas.getContext('2d');
+    await page.render({ canvasContext: context, viewport: state.renderViewport }).promise;
 
-  const context = canvas.getContext('2d');
-  await page.render({ canvasContext: context, viewport: state.renderViewport }).promise;
+    const pageBlocks = await ensurePageBlocks(currentPage);
+    blocks = pageBlocks;
+    selectedBlockIndex = selectedBlockIndex >= 0 && blocks[selectedBlockIndex] ? selectedBlockIndex : -1;
 
-  const pageBlocks = await ensurePageBlocks(currentPage);
-  blocks = pageBlocks;
-  selectedBlockIndex = selectedBlockIndex >= 0 && blocks[selectedBlockIndex] ? selectedBlockIndex : -1;
+    setupEventHandlers(canvas);
 
-  setupEventHandlers(canvas);
+    pageBlocks.forEach((block, index) => {
+      if (block.pageNumber !== currentPage) return;
 
-  pageBlocks.forEach((block, index) => {
-    if (block.pageNumber !== currentPage) return;
+      const box = pdfToCanvas(block.x, block.y, block.width, block.height);
 
-    const box = pdfToCanvas(block.x, block.y, block.width, block.height);
-
-    const element = document.createElement('button');
-    element.type = 'button';
-    element.className = `text-block ${index === selectedBlockIndex ? 'active' : ''}`;
-    element.textContent = block.text;
-    element.title = block.text;
-    element.style.left = `${box.left}px`;
-    element.style.top = `${box.top}px`;
-    element.style.width = `${Math.max(box.width, 12)}px`;
-    element.style.height = `${Math.max(box.height, 12)}px`;
-    element.style.pointerEvents = 'auto';
-    element.style.opacity = index === selectedBlockIndex ? '1' : '0';
-    element.style.transition = 'opacity 0.2s ease';
-    element.addEventListener('mouseenter', () => {
-      element.style.opacity = '1';
+      const element = document.createElement('button');
+      element.type = 'button';
+      element.className = `text-block ${index === selectedBlockIndex ? 'active' : ''}`;
+      element.textContent = block.text;
+      element.title = block.text;
+      element.style.left = `${box.left}px`;
+      element.style.top = `${box.top}px`;
+      element.style.width = `${Math.max(box.width, 12)}px`;
+      element.style.height = `${Math.max(box.height, 12)}px`;
+      element.style.pointerEvents = 'auto';
+      element.style.opacity = index === selectedBlockIndex ? '1' : '0';
+      element.style.transition = 'opacity 0.2s ease';
+      element.addEventListener('mouseenter', () => {
+        element.style.opacity = '1';
+      });
+      element.addEventListener('mouseleave', () => {
+        if (index !== selectedBlockIndex) element.style.opacity = '0';
+      });
+      element.addEventListener('click', (event) => {
+        event.stopPropagation();
+        selectBlock(index);
+      });
+      overlay.appendChild(element);
     });
-    element.addEventListener('mouseleave', () => {
-      if (index !== selectedBlockIndex) element.style.opacity = '0';
-    });
-    element.addEventListener('click', (event) => {
-      event.stopPropagation();
-      selectBlock(index);
-      renderPage();
-    });
-    overlay.appendChild(element);
-  });
 
-  updateSelectedBlock();
+    updateSelectedBlock();
+  } finally {
+    state.isRendering = false;
+  }
 }
 
 function loadPdf(file) {
