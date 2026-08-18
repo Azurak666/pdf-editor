@@ -1,0 +1,22 @@
+{
+  "name": "pdf-editor",
+  "version": "1.0.0",
+  "description": "A lightweight browser-based PDF editing app for cropping, annotating, saving, and rendering PDF pages directly in the browser.",
+  "main": "index.html",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108"
+  },
+  "devDependencies": {
+    "vite": "^8.2.1"
+  }
+}

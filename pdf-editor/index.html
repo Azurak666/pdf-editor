@@ -4,9 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>PDF Editor</title>
-    <link rel="stylesheet" href="./styles.css" />
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script type="module" src="/src/main.js"></script>
   </head>
   <body>
     <div class="app-shell">
@@ -15,7 +13,7 @@
           <input id="pdf-input" type="file" accept="application/pdf" />
           <span>Load PDF</span>
         </label>
-        <button id="detect-button" type="button">Detect Blocks</button>
+
         <button id="save-button" type="button">Save PDF</button>
       </header>
 
@@ -42,9 +40,5 @@
       </main>
     </div>
 
-    <script src="./block-detect.js"></script>
-    <script src="./pdf-render.js"></script>
-    <script src="./pdf-save.js"></script>
-    <script src="./editor.js"></script>
   </body>
 </html>
