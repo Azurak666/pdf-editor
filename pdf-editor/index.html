@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PDF Editor</title>
+    <link rel="stylesheet" href="./styles.css" />
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="toolbar">
+        <label class="upload-button">
+          <input id="pdf-input" type="file" accept="application/pdf" />
+          <span>Load PDF</span>
+        </label>
+        <button id="detect-button" type="button">Detect Blocks</button>
+        <button id="save-button" type="button">Save PDF</button>
+      </header>
+
+      <main class="workspace">
+        <section class="viewer-panel">
+          <div class="pdf-stage">
+            <canvas id="pdf-canvas"></canvas>
+            <div id="text-overlay"></div>
+          </div>
+        </section>
+
+        <aside class="sidebar">
+          <h2>Selected block</h2>
+          <textarea id="block-text" placeholder="Select a text block to edit..."></textarea>
+
+          <div class="sidebar-controls">
+            <label>
+              Page
+              <input id="page-number" type="number" min="1" value="1" />
+            </label>
+            <button id="apply-edit" type="button">Apply edit</button>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="./block-detect.js"></script>
+    <script src="./pdf-render.js"></script>
+    <script src="./pdf-save.js"></script>
+    <script src="./editor.js"></script>
+  </body>
+</html>
