@@ -17,12 +17,29 @@
           <div id="page-inner">
             <canvas id="pdf-canvas"></canvas>
             <canvas id="mask-canvas"></canvas>
-            <div id="text-layer"></div>
+            <div id="text-layer"><div id="selection-box" hidden></div></div>
           </div>
         </div>
       </section>
       <aside class="inspector">
         <h1>Text editor</h1>
+        <div class="format-toolbar" aria-label="Text formatting">
+          <label>Font<select id="font-family">
+            <option value="sans-serif">Sans serif</option>
+            <option value="Arial">Arial</option>
+            <option value="Helvetica">Helvetica</option>
+            <option value="Georgia">Georgia</option>
+            <option value="Times New Roman">Times New Roman</option>
+            <option value="Courier New">Courier New</option>
+          </select></label>
+          <label>Size<input id="font-size" type="number" min="6" max="144" step="1" /></label>
+          <div class="format-buttons">
+            <button id="bold-button" type="button" aria-label="Bold"><strong>B</strong></button>
+            <button id="italic-button" type="button" aria-label="Italic"><em>I</em></button>
+            <button id="underline-button" type="button" aria-label="Underline"><u>U</u></button>
+            <input id="font-color" type="color" value="#000000" aria-label="Text color" />
+          </div>
+        </div>
         <textarea id="text-value" placeholder="Select text in the PDF"></textarea>
         <button id="apply-button" type="button">Apply text</button>
       </aside>

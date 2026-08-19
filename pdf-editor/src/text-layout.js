@@ -21,6 +21,9 @@ export function textItemToBlock(item, pageNumber, index) {
     fontSize: height,
     fontWeight: inferredWeight,
     fontStyle: inferredStyle,
+    textDecoration: 'none',
+    fontColor: '#000000',
+    modified: false,
   };
 }
 

@@ -10,23 +10,65 @@ const input = $('pdf-input');
 const save = $('save-button');
 const apply = $('apply-button');
 const textValue = $('text-value');
+const fontFamily = $('font-family');
+const fontSize = $('font-size');
+const boldButton = $('bold-button');
+const italicButton = $('italic-button');
+const underlineButton = $('underline-button');
+const fontColor = $('font-color');
 const status = $('status');
 const pageInner = $('page-inner');
 const pdfCanvas = $('pdf-canvas');
 const maskCanvas = $('mask-canvas');
 const textLayer = $('text-layer');
+const selectionBox = $('selection-box');
 
-const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1 };
+const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [] };
 
 function setStatus(message) { status.textContent = message; }
 function selectedBlock() { return state.blocks[state.selected]; }
+function selectedBlocks() { return [...state.selectedIndices].map((index) => state.blocks[index]).filter(Boolean); }
+
+function snapshot() { return JSON.stringify(state.blocks); }
+
+function recordHistory() {
+  const current = snapshot();
+  if (state.history[state.history.length - 1] !== current) state.history.push(current);
+  state.future = [];
+}
+
+function undo() {
+  if (state.history.length < 2) return;
+  state.future.push(state.history.pop());
+  state.blocks = JSON.parse(state.history[state.history.length - 1]);
+  renderTextLayer();
+  syncInspector();
+}
+
+function redo() {
+  const next = state.future.pop();
+  if (!next) return;
+  state.history.push(next);
+  state.blocks = JSON.parse(next);
+  renderTextLayer();
+  syncInspector();
+}
 
 function syncInspector() {
-  textValue.value = selectedBlock()?.text || '';
+  const block = selectedBlock();
+  const blocks = selectedBlocks();
+  textValue.value = block?.text || '';
+  fontFamily.value = block?.fontFamily || 'sans-serif';
+  fontSize.value = block?.fontSize || '';
+  fontColor.value = block?.fontColor || '#000000';
+  boldButton.classList.toggle('active', blocks.length > 0 && blocks.every((item) => item.fontWeight === '700'));
+  italicButton.classList.toggle('active', blocks.length > 0 && blocks.every((item) => item.fontStyle === 'italic'));
+  underlineButton.classList.toggle('active', blocks.length > 0 && blocks.every((item) => item.textDecoration === 'underline'));
 }
 
 function selectBlock(index) {
   state.selected = index;
+  state.selectedIndices = index >= 0 ? new Set([index]) : new Set();
   syncInspector();
   renderTextLayer();
 }
@@ -49,6 +91,8 @@ function makeEditor(block, index, box, maskContext) {
   editor.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
   editor.style.fontWeight = block.fontWeight;
   editor.style.fontStyle = block.fontStyle;
+  editor.style.textDecoration = block.textDecoration || 'none';
+  editor.style.color = block.fontColor || '#000000';
 
   const run = document.createElement('span');
   run.className = 'edit-run';
@@ -60,7 +104,11 @@ function makeEditor(block, index, box, maskContext) {
   editor.appendChild(run);
   editor.addEventListener('input', () => {
     block.text = editor.textContent || '';
+    block.modified = true;
     syncInspector();
+  });
+  editor.addEventListener('beforeinput', (event) => {
+    if (event.inputType?.startsWith('insert') || event.inputType?.startsWith('delete')) recordHistory();
   });
   wrapper.appendChild(editor);
   textLayer.appendChild(wrapper);
@@ -81,6 +129,8 @@ function makeEditedText(block, box, maskContext) {
   replacement.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
   replacement.style.fontWeight = block.fontWeight;
   replacement.style.fontStyle = block.fontStyle;
+  replacement.style.textDecoration = block.textDecoration || 'none';
+  replacement.style.color = block.fontColor || '#000000';
   textLayer.appendChild(replacement);
 }
 
@@ -92,6 +142,7 @@ function paintMask(context, box) {
 
 function renderTextLayer() {
   textLayer.replaceChildren();
+  textLayer.appendChild(selectionBox);
   const maskContext = maskCanvas.getContext('2d');
   maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
@@ -99,6 +150,7 @@ function renderTextLayer() {
     const box = blockRectangle(state.viewport, block);
     const target = document.createElement('div');
     target.className = 'text-target';
+    if (state.selectedIndices.has(index)) target.classList.add('selected');
     target.title = `${block.text} Click to edit`;
     target.style.left = `${box.left}px`;
     target.style.top = `${box.top}px`;
@@ -108,13 +160,36 @@ function renderTextLayer() {
       event.stopPropagation();
       selectBlock(index);
     });
+    target.addEventListener('pointerdown', (event) => event.stopPropagation());
     textLayer.appendChild(target);
-    if (index === state.selected) {
+    if (index === state.selected && state.selectedIndices.size === 1) {
       makeEditor(block, index, box, maskContext);
-    } else if (block.text !== block.originalText) {
+    } else if (block.modified) {
       makeEditedText(block, box, maskContext);
     }
   });
+}
+
+function finishMarquee() {
+  const start = state.selectionStart;
+  if (!start) return;
+  const left = Math.min(start.x, state.selectionEnd.x);
+  const top = Math.min(start.y, state.selectionEnd.y);
+  const right = Math.max(start.x, state.selectionEnd.x);
+  const bottom = Math.max(start.y, state.selectionEnd.y);
+  state.selectedIndices = new Set();
+  state.blocks.forEach((block, index) => {
+    const box = blockRectangle(state.viewport, block);
+    if (box.left < right && box.left + box.width > left && box.top < bottom && box.top + box.height > top) {
+      state.selectedIndices.add(index);
+    }
+  });
+  state.selected = state.selectedIndices.size === 1 ? [...state.selectedIndices][0] : -1;
+  selectionBox.hidden = true;
+  state.selecting = false;
+  setStatus(`${state.selectedIndices.size} text item${state.selectedIndices.size === 1 ? '' : 's'} selected.`);
+  syncInspector();
+  renderTextLayer();
 }
 
 async function openPdf(file) {
@@ -125,6 +200,8 @@ async function openPdf(file) {
     state.page = await state.pdf.getPage(1);
     state.viewport = state.page.getViewport({ scale: Math.min(2, 1000 / state.page.getViewport({ scale: 1 }).width) });
     state.selected = -1;
+    state.history = [];
+    state.future = [];
 
     pdfCanvas.width = state.viewport.width;
     pdfCanvas.height = state.viewport.height;
@@ -139,6 +216,7 @@ async function openPdf(file) {
       fontFamily: content.styles?.[item.fontName]?.fontFamily,
       ...fontMetadata(state.page, item),
     }, 1, index)).filter(Boolean);
+    state.history.push(snapshot());
     renderTextLayer();
     setStatus(`${state.blocks.length} text items loaded.`);
   } catch (error) {
@@ -187,7 +265,7 @@ async function downloadPdf() {
   if (!state.pdf) return;
   const output = await PDFDocument.load(state.sourceBytes);
   for (const block of state.blocks) {
-    if (block.text === block.originalText || !block.text) continue;
+    if (!block.modified || !block.text) continue;
     const page = output.getPages()[block.pageNumber - 1];
     const maskHeight = Math.max(block.height * 1.25, block.fontSize * 1.25);
     page.drawRectangle({
@@ -197,8 +275,16 @@ async function downloadPdf() {
       height: maskHeight,
       color: rgb(1, 1, 1),
     });
-    const font = await output.embedFont(block.fontWeight === '700' ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
-    page.drawText(block.text, { x: block.x, y: block.baseline, size: block.fontSize, font, color: rgb(0, 0, 0) });
+    const font = await output.embedFont(exportFont(block));
+    page.drawText(block.text, { x: block.x, y: block.baseline, size: block.fontSize, font, color: hexColor(block.fontColor) });
+    if (block.textDecoration === 'underline') {
+      page.drawLine({
+        start: { x: block.x, y: block.baseline - block.fontSize * 0.12 },
+        end: { x: block.x + block.width, y: block.baseline - block.fontSize * 0.12 },
+        thickness: Math.max(0.5, block.fontSize * 0.04),
+        color: hexColor(block.fontColor),
+      });
+    }
   }
   const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
   const link = document.createElement('a');
@@ -208,12 +294,106 @@ async function downloadPdf() {
   URL.revokeObjectURL(url);
 }
 
+function exportFont(block) {
+  if (block.fontFamily === 'Times New Roman') {
+    if (block.fontWeight === '700' && block.fontStyle === 'italic') return StandardFonts.TimesRomanBoldItalic;
+    if (block.fontWeight === '700') return StandardFonts.TimesRomanBold;
+    if (block.fontStyle === 'italic') return StandardFonts.TimesRomanItalic;
+    return StandardFonts.TimesRoman;
+  }
+  if (block.fontFamily === 'Courier New') {
+    if (block.fontWeight === '700' && block.fontStyle === 'italic') return StandardFonts.CourierBoldOblique;
+    if (block.fontWeight === '700') return StandardFonts.CourierBold;
+    if (block.fontStyle === 'italic') return StandardFonts.CourierOblique;
+    return StandardFonts.Courier;
+  }
+  if (block.fontWeight === '700' && block.fontStyle === 'italic') return StandardFonts.HelveticaBoldOblique;
+  if (block.fontWeight === '700') return StandardFonts.HelveticaBold;
+  if (block.fontStyle === 'italic') return StandardFonts.HelveticaOblique;
+  return StandardFonts.Helvetica;
+}
+
+function hexColor(value = '#000000') {
+  const hex = value.replace('#', '');
+  const red = Number.parseInt(hex.slice(0, 2), 16) / 255;
+  const green = Number.parseInt(hex.slice(2, 4), 16) / 255;
+  const blue = Number.parseInt(hex.slice(4, 6), 16) / 255;
+  return rgb(red || 0, green || 0, blue || 0);
+}
+
 input.addEventListener('change', (event) => openPdf(event.target.files?.[0]));
 save.addEventListener('click', downloadPdf);
 apply.addEventListener('click', () => {
-  const block = selectedBlock();
-  if (!block) return;
-  block.text = textValue.value;
+  if (!selectedBlocks().length) return;
+  recordHistory();
+  selectedBlocks().forEach((item) => {
+    item.text = textValue.value;
+    item.modified = true;
+  });
   renderTextLayer();
 });
+function updateSelectedStyle(property, value) {
+  const blocks = selectedBlocks();
+  if (!blocks.length) return;
+  recordHistory();
+  blocks.forEach((block) => {
+    block[property] = value;
+    block.modified = true;
+  });
+  syncInspector();
+  renderTextLayer();
+}
+fontFamily.addEventListener('change', () => updateSelectedStyle('fontFamily', fontFamily.value));
+fontSize.addEventListener('change', () => updateSelectedStyle('fontSize', Math.max(6, Number(fontSize.value) || 12)));
+function toggleSelectedStyle(property, activeValue, inactiveValue) {
+  const blocks = selectedBlocks();
+  if (!blocks.length) return;
+  const allActive = blocks.every((block) => block[property] === activeValue);
+  updateSelectedStyle(property, allActive ? inactiveValue : activeValue);
+}
+boldButton.addEventListener('click', () => toggleSelectedStyle('fontWeight', '700', '400'));
+italicButton.addEventListener('click', () => toggleSelectedStyle('fontStyle', 'italic', 'normal'));
+underlineButton.addEventListener('click', () => toggleSelectedStyle('textDecoration', 'underline', 'none'));
+fontColor.addEventListener('input', () => updateSelectedStyle('fontColor', fontColor.value));
+window.addEventListener('keydown', (event) => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === 'z') {
+    event.preventDefault();
+    event.shiftKey ? redo() : undo();
+  } else if (key === 'y') {
+    event.preventDefault();
+    redo();
+  }
+});
+textLayer.addEventListener('pointerdown', (event) => {
+  if (event.target !== textLayer) return;
+  const rect = pageInner.getBoundingClientRect();
+  state.selecting = true;
+  state.selectionStart = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  state.selectionEnd = state.selectionStart;
+  selectionBox.hidden = false;
+  selectionBox.style.left = `${state.selectionStart.x}px`;
+  selectionBox.style.top = `${state.selectionStart.y}px`;
+  selectionBox.style.width = '0px';
+  selectionBox.style.height = '0px';
+  event.preventDefault();
+});
+
+document.addEventListener('pointermove', (event) => {
+  if (!state.selecting) return;
+  const rect = pageInner.getBoundingClientRect();
+  state.selectionEnd = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  const left = Math.min(state.selectionStart.x, state.selectionEnd.x);
+  const top = Math.min(state.selectionStart.y, state.selectionEnd.y);
+  selectionBox.style.left = `${left}px`;
+  selectionBox.style.top = `${top}px`;
+  selectionBox.style.width = `${Math.abs(state.selectionEnd.x - state.selectionStart.x)}px`;
+  selectionBox.style.height = `${Math.abs(state.selectionEnd.y - state.selectionStart.y)}px`;
+});
+
+document.addEventListener('pointerup', () => {
+  if (state.selecting) finishMarquee();
+});
+
 pdfCanvas.addEventListener('click', () => selectBlock(-1));
