@@ -5,6 +5,8 @@ export function textItemToBlock(item, pageNumber, index) {
   const height = Math.max(Number(item.height) || 12, 8);
   const text = item.str.trim();
   const fontName = String(item.fontName || '');
+  const inferredWeight = item.fontWeight || (/bold|black|heavy|demi|semibold/i.test(fontName) ? '700' : '400');
+  const inferredStyle = item.fontStyle || (/italic|oblique/i.test(fontName) ? 'italic' : 'normal');
 
   return {
     id: `page-${pageNumber}-text-${index}`,
@@ -17,8 +19,8 @@ export function textItemToBlock(item, pageNumber, index) {
     originalText: text,
     fontFamily: item.fontFamily || 'sans-serif',
     fontSize: height,
-    fontWeight: /bold|black|heavy/i.test(fontName) ? '700' : '400',
-    fontStyle: /italic|oblique/i.test(fontName) ? 'italic' : 'normal',
+    fontWeight: inferredWeight,
+    fontStyle: inferredStyle,
   };
 }
 

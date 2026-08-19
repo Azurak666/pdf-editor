@@ -32,8 +32,7 @@ function selectBlock(index) {
 }
 
 function makeEditor(block, index, box, maskContext) {
-  maskContext.fillStyle = '#fff';
-  maskContext.fillRect(box.left, box.top, box.width, box.height);
+  paintMask(maskContext, box);
 
   const wrapper = document.createElement('div');
   wrapper.className = 'inline-editor-wrapper';
@@ -69,8 +68,7 @@ function makeEditor(block, index, box, maskContext) {
 }
 
 function makeEditedText(block, box, maskContext) {
-  maskContext.fillStyle = '#fff';
-  maskContext.fillRect(box.left, box.top, box.width, box.height);
+  paintMask(maskContext, box);
 
   const replacement = document.createElement('div');
   replacement.className = 'edited-text';
@@ -84,6 +82,12 @@ function makeEditedText(block, box, maskContext) {
   replacement.style.fontWeight = block.fontWeight;
   replacement.style.fontStyle = block.fontStyle;
   textLayer.appendChild(replacement);
+}
+
+function paintMask(context, box) {
+  const bleed = 4;
+  context.fillStyle = '#fff';
+  context.fillRect(box.left - bleed, box.top - bleed, box.width + bleed * 2, box.height + bleed * 2);
 }
 
 function renderTextLayer() {
@@ -120,11 +124,6 @@ async function openPdf(file) {
     state.pdf = await getDocument({ data: state.sourceBytes }).promise;
     state.page = await state.pdf.getPage(1);
     state.viewport = state.page.getViewport({ scale: Math.min(2, 1000 / state.page.getViewport({ scale: 1 }).width) });
-    const content = await state.page.getTextContent();
-    state.blocks = content.items.map((item, index) => textItemToBlock({
-      ...item,
-      fontFamily: content.styles?.[item.fontName]?.fontFamily,
-    }, 1, index)).filter(Boolean);
     state.selected = -1;
 
     pdfCanvas.width = state.viewport.width;
@@ -134,6 +133,12 @@ async function openPdf(file) {
     pageInner.style.width = `${state.viewport.width}px`;
     pageInner.style.height = `${state.viewport.height}px`;
     await state.page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: state.viewport }).promise;
+    const content = await state.page.getTextContent();
+    state.blocks = content.items.map((item, index) => textItemToBlock({
+      ...item,
+      fontFamily: content.styles?.[item.fontName]?.fontFamily,
+      ...fontMetadata(state.page, item),
+    }, 1, index)).filter(Boolean);
     renderTextLayer();
     setStatus(`${state.blocks.length} text items loaded.`);
   } catch (error) {
@@ -141,6 +146,41 @@ async function openPdf(file) {
     setStatus('PDF could not be opened.');
     alert(`Unable to read the PDF file: ${error.message}`);
   }
+}
+
+function fontMetadata(page, item) {
+  try {
+    const commonObjects = page.commonObjs;
+    const font = commonObjects?.has?.(item.fontName) ? commonObjects.get(item.fontName) : null;
+    if (!font) return {};
+
+    const fontFamily = font.loadedName || font.fallbackName || font.name;
+    const measuredWeight = detectFontWeight(fontFamily, item.str, item.width, item.height);
+
+    return {
+      fontWeight: font.bold || font.black || font.weight >= 700 ? '700' : measuredWeight,
+      fontStyle: font.italic || font.style === 'italic' ? 'italic' : 'normal',
+      fontFamily,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function detectFontWeight(fontFamily, text, pdfWidth, pdfHeight) {
+  if (!fontFamily || !text || !pdfWidth || !pdfHeight) return '400';
+
+  const canvas = document.createElement('canvas');
+  const context = canvas.getContext('2d');
+  const size = 100;
+  context.font = `400 ${size}px "${fontFamily}"`;
+  const normalWidth = context.measureText(text).width;
+  context.font = `700 ${size}px "${fontFamily}"`;
+  const boldWidth = context.measureText(text).width;
+  const targetWidth = Number(pdfWidth) * (size / Number(pdfHeight));
+
+  if (Math.abs(boldWidth - targetWidth) < Math.abs(normalWidth - targetWidth)) return '700';
+  return '400';
 }
 
 async function downloadPdf() {
