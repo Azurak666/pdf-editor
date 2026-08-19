@@ -1,318 +1,166 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
-
 import './styles.css';
-import { makeBlockFromPdfItem, normalizePdfTextItems } from './text-layout.js';
+import { blockRectangle, textItemToBlock } from './text-layout.js';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
-const pdfInput = document.getElementById('pdf-input');
-const saveButton = document.getElementById('save-button');
-const blockText = document.getElementById('block-text');
-const pageNumberInput = document.getElementById('page-number');
-const applyEditButton = document.getElementById('apply-edit');
+const $ = (id) => document.getElementById(id);
+const input = $('pdf-input');
+const save = $('save-button');
+const apply = $('apply-button');
+const textValue = $('text-value');
+const status = $('status');
+const pageInner = $('page-inner');
+const pdfCanvas = $('pdf-canvas');
+const maskCanvas = $('mask-canvas');
+const textLayer = $('text-layer');
 
-let pdfDoc = null;
-let currentPage = 1;
-let blocks = [];
-let selectedBlockIndex = -1;
-const pageBlockCache = new Map();
+const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1 };
 
-// Global state for viewport and drag
-let state = {
-  viewport: null,
-  renderViewport: null,
-  draggingBlockIndex: -1,
-  dragStartX: 0,
-  dragStartY: 0,
-  dragStartBlockX: 0,
-  dragStartBlockY: 0,
-  isRendering: false, // Guard to prevent concurrent renders
-};
+function setStatus(message) { status.textContent = message; }
+function selectedBlock() { return state.blocks[state.selected]; }
 
-function updateSelectedBlock() {
-  const items = document.querySelectorAll('.text-block');
-  items.forEach((item, index) => item.classList.toggle('active', index === selectedBlockIndex));
-
-  if (selectedBlockIndex >= 0 && blocks[selectedBlockIndex]) {
-    blockText.value = blocks[selectedBlockIndex].text;
-    pageNumberInput.value = blocks[selectedBlockIndex].pageNumber || currentPage;
-  } else {
-    blockText.value = '';
-  }
+function syncInspector() {
+  textValue.value = selectedBlock()?.text || '';
 }
 
 function selectBlock(index) {
-  selectedBlockIndex = index;
-  updateSelectedBlock();
+  state.selected = index;
+  syncInspector();
+  renderTextLayer();
 }
 
-function pdfToCanvas(pdfX, pdfY, pdfW, pdfH) {
-  if (!state.viewport || !state.renderViewport) return { left: 0, top: 0, width: 0, height: 0 };
-  
-  const left = (pdfX / state.viewport.width) * state.renderViewport.width;
-  const top = state.renderViewport.height - ((pdfY + pdfH) / state.viewport.height) * state.renderViewport.height;
-  const width = (pdfW / state.viewport.width) * state.renderViewport.width;
-  const height = (pdfH / state.viewport.height) * state.renderViewport.height;
+function makeEditor(block, index, box, maskContext) {
+  maskContext.fillStyle = '#fff';
+  maskContext.fillRect(box.left, box.top, box.width, box.height);
 
-  return { left, top, width, height };
+  const wrapper = document.createElement('div');
+  wrapper.className = 'inline-editor-wrapper';
+  wrapper.style.left = `${box.left}px`;
+  wrapper.style.top = `${box.top}px`;
+  wrapper.style.width = `${Math.max(box.width, 12)}px`;
+  wrapper.style.height = `${Math.max(box.height, 12)}px`;
+
+  const editor = document.createElement('div');
+  editor.className = 'inline-editor';
+  editor.contentEditable = 'true';
+  editor.spellcheck = false;
+  editor.style.fontFamily = block.fontFamily;
+  editor.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
+  editor.style.fontWeight = block.fontWeight;
+  editor.style.fontStyle = block.fontStyle;
+
+  const run = document.createElement('span');
+  run.className = 'edit-run';
+  run.textContent = block.text;
+  run.dataset.runIndex = '0';
+  run.dataset.origWeight = block.fontWeight;
+  run.dataset.origItalic = block.fontStyle === 'italic' ? 'true' : '';
+  run.dataset.origUnderline = '';
+  editor.appendChild(run);
+  editor.addEventListener('input', () => {
+    block.text = editor.textContent || '';
+    syncInspector();
+  });
+  wrapper.appendChild(editor);
+  textLayer.appendChild(wrapper);
+  requestAnimationFrame(() => editor.focus());
 }
 
+function makeEditedText(block, box, maskContext) {
+  maskContext.fillStyle = '#fff';
+  maskContext.fillRect(box.left, box.top, box.width, box.height);
 
-
-function canvasToPdf(canvasX, canvasY) {
-  if (!state.viewport || !state.renderViewport) return { x: 0, y: 0 };
-  
-  const pdfX = (canvasX / state.renderViewport.width) * state.viewport.width;
-  const pdfY = state.viewport.height - (canvasY / state.renderViewport.height) * state.viewport.height;
-
-  return { x: pdfX, y: pdfY };
+  const replacement = document.createElement('div');
+  replacement.className = 'edited-text';
+  replacement.textContent = block.text;
+  replacement.style.left = `${box.left}px`;
+  replacement.style.top = `${box.top}px`;
+  replacement.style.width = `${Math.max(box.width, 12)}px`;
+  replacement.style.height = `${Math.max(box.height, 12)}px`;
+  replacement.style.fontFamily = block.fontFamily;
+  replacement.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
+  replacement.style.fontWeight = block.fontWeight;
+  replacement.style.fontStyle = block.fontStyle;
+  textLayer.appendChild(replacement);
 }
 
-async function ensurePageBlocks(pageNumber) {
-  if (!pdfDoc) return [];
+function renderTextLayer() {
+  textLayer.replaceChildren();
+  const maskContext = maskCanvas.getContext('2d');
+  maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
-  if (pageBlockCache.has(pageNumber)) {
-    blocks = pageBlockCache.get(pageNumber);
-    return blocks;
-  }
-
-  const page = await pdfDoc.getPage(pageNumber);
-  const { items } = await page.getTextContent();
-  const pageBlocks = normalizePdfTextItems(items)
-    .map((item, index) => makeBlockFromPdfItem({
-      ...item,
-      x: item.x,
-      y: item.y - item.height,
-    }, pageNumber, index))
-    .filter(Boolean);
-
-  pageBlockCache.set(pageNumber, pageBlocks);
-  blocks = pageBlocks;
-  return blocks;
-}
-
-function setupEventHandlers(canvas) {
-  canvas.onmousedown = (event) => {
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = event.clientX - rect.left;
-    const canvasY = event.clientY - rect.top;
-    const pdf = canvasToPdf(canvasX, canvasY);
-
-    const hitBlock = blocks.findIndex((block) => {
-      if (block.pageNumber !== currentPage) return false;
-      return (
-        pdf.x >= block.x &&
-        pdf.x <= block.x + block.width &&
-        pdf.y >= block.y &&
-        pdf.y <= block.y + block.height
-      );
+  state.blocks.forEach((block, index) => {
+    const box = blockRectangle(state.viewport, block);
+    const target = document.createElement('div');
+    target.className = 'text-target';
+    target.title = `${block.text} Click to edit`;
+    target.style.left = `${box.left}px`;
+    target.style.top = `${box.top}px`;
+    target.style.width = `${Math.max(box.width, 12)}px`;
+    target.style.height = `${Math.max(box.height, 12)}px`;
+    target.addEventListener('click', (event) => {
+      event.stopPropagation();
+      selectBlock(index);
     });
-
-    if (hitBlock >= 0) {
-      state.draggingBlockIndex = hitBlock;
-      state.dragStartX = event.clientX;
-      state.dragStartY = event.clientY;
-      state.dragStartBlockX = blocks[hitBlock].x;
-      state.dragStartBlockY = blocks[hitBlock].y;
-    }
-  };
-
-  canvas.onclick = (event) => {
-    if (state.draggingBlockIndex >= 0) return;
-
-    const rect = canvas.getBoundingClientRect();
-    const canvasX = event.clientX - rect.left;
-    const canvasY = event.clientY - rect.top;
-    const pdf = canvasToPdf(canvasX, canvasY);
-
-    const hitBlock = blocks.findIndex((block) => {
-      if (block.pageNumber !== currentPage) return false;
-      return (
-        pdf.x >= block.x &&
-        pdf.x <= block.x + block.width &&
-        pdf.y >= block.y &&
-        pdf.y <= block.y + block.height
-      );
-    });
-
-    if (hitBlock >= 0) {
-      selectedBlockIndex = hitBlock;
-      updateSelectedBlock();
-    } else {
-      selectedBlockIndex = -1;
-      updateSelectedBlock();
-    }
-  };
-}
-
-function setupGlobalDragHandlers() {
-  document.onmousemove = (event) => {
-    if (state.draggingBlockIndex < 0) return;
-
-    const deltaX = (event.clientX - state.dragStartX) / state.renderViewport.width * state.viewport.width;
-    const deltaY = (state.dragStartY - event.clientY) / state.renderViewport.height * state.viewport.height;
-
-    blocks[state.draggingBlockIndex].x = state.dragStartBlockX + deltaX;
-    blocks[state.draggingBlockIndex].y = state.dragStartBlockY + deltaY;
-
-    updateOverlay();
-  };
-
-  document.onmouseup = () => {
-    if (state.draggingBlockIndex >= 0) {
-      selectedBlockIndex = state.draggingBlockIndex;
-      updateSelectedBlock();
-    }
-    state.draggingBlockIndex = -1;
-  };
-}
-
-function updateOverlay() {
-  const overlay = document.getElementById('text-overlay');
-  const boxes = overlay.querySelectorAll('.text-block');
-  
-  blocks.forEach((block, index) => {
-    if (block.pageNumber !== currentPage) return;
-    
-    const box = pdfToCanvas(block.x, block.y, block.width, block.height);
-    if (boxes[index]) {
-      boxes[index].style.left = `${box.left}px`;
-      boxes[index].style.top = `${box.top}px`;
-      boxes[index].style.width = `${Math.max(box.width, 12)}px`;
-      boxes[index].style.height = `${Math.max(box.height, 12)}px`;
+    textLayer.appendChild(target);
+    if (index === state.selected) {
+      makeEditor(block, index, box, maskContext);
+    } else if (block.text !== block.originalText) {
+      makeEditedText(block, box, maskContext);
     }
   });
 }
 
-async function renderPage() {
-  if (!pdfDoc || state.isRendering) return; // Guard against concurrent renders
-  
-  state.isRendering = true;
-  try {
-    const page = await pdfDoc.getPage(currentPage);
-    // Text coordinates from getTextContent() are ALWAYS in original PDF space (scale 1.0)
-    state.viewport = page.getViewport({ scale: 1.0 });
-    const scale = Math.min(2, 1000 / state.viewport.width);
-    state.renderViewport = page.getViewport({ scale });
-
-    const canvas = document.getElementById('pdf-canvas');
-    const overlay = document.getElementById('text-overlay');
-
-    canvas.width = state.renderViewport.width;
-    canvas.height = state.renderViewport.height;
-    overlay.style.width = `${state.renderViewport.width}px`;
-    overlay.style.height = `${state.renderViewport.height}px`;
-    overlay.innerHTML = '';
-    overlay.style.pointerEvents = 'none';
-
-    const context = canvas.getContext('2d');
-    await page.render({ canvasContext: context, viewport: state.renderViewport }).promise;
-
-    const pageBlocks = await ensurePageBlocks(currentPage);
-    blocks = pageBlocks;
-    selectedBlockIndex = selectedBlockIndex >= 0 && blocks[selectedBlockIndex] ? selectedBlockIndex : -1;
-
-    setupEventHandlers(canvas);
-
-    pageBlocks.forEach((block, index) => {
-      if (block.pageNumber !== currentPage) return;
-
-      const box = pdfToCanvas(block.x, block.y, block.width, block.height);
-
-      const element = document.createElement('button');
-      element.type = 'button';
-      element.className = `text-block ${index === selectedBlockIndex ? 'active' : ''}`;
-      element.textContent = block.text;
-      element.title = block.text;
-      element.style.left = `${box.left}px`;
-      element.style.top = `${box.top}px`;
-      element.style.width = `${Math.max(box.width, 12)}px`;
-      element.style.height = `${Math.max(box.height, 12)}px`;
-      element.style.pointerEvents = 'auto';
-      element.style.opacity = index === selectedBlockIndex ? '1' : '0';
-      element.style.transition = 'opacity 0.2s ease';
-      element.addEventListener('mouseenter', () => {
-        element.style.opacity = '1';
-      });
-      element.addEventListener('mouseleave', () => {
-        if (index !== selectedBlockIndex) element.style.opacity = '0';
-      });
-      element.addEventListener('click', (event) => {
-        event.stopPropagation();
-        selectBlock(index);
-      });
-      overlay.appendChild(element);
-    });
-
-    updateSelectedBlock();
-  } finally {
-    state.isRendering = false;
-  }
-}
-
-function loadPdf(file) {
+async function openPdf(file) {
   if (!file) return;
+  try {
+    state.sourceBytes = new Uint8Array(await file.arrayBuffer());
+    state.pdf = await getDocument({ data: state.sourceBytes }).promise;
+    state.page = await state.pdf.getPage(1);
+    state.viewport = state.page.getViewport({ scale: Math.min(2, 1000 / state.page.getViewport({ scale: 1 }).width) });
+    const content = await state.page.getTextContent();
+    state.blocks = content.items.map((item, index) => textItemToBlock({
+      ...item,
+      fontFamily: content.styles?.[item.fontName]?.fontFamily,
+    }, 1, index)).filter(Boolean);
+    state.selected = -1;
 
-  const reader = new FileReader();
-  reader.onload = (event) => {
-    const bytes = new Uint8Array(event.target.result);
-    getDocument({ data: bytes }).promise
-      .then((doc) => {
-        pdfDoc = doc;
-        pageBlockCache.clear();
-        currentPage = 1;
-        blocks = [];
-        selectedBlockIndex = -1;
-        pageNumberInput.value = currentPage;
-        return renderPage();
-      })
-      .catch((error) => {
-        console.error('Failed to open PDF', error);
-        alert('Unable to read the PDF file.');
-      });
-  };
-  reader.readAsArrayBuffer(file);
-}
-
-function applyBlockEdit() {
-  if (selectedBlockIndex < 0 || !blocks[selectedBlockIndex]) return;
-
-  const nextPage = Number(pageNumberInput.value) || currentPage;
-  const edited = blocks[selectedBlockIndex];
-  edited.text = blockText.value.trim();
-  edited.pageNumber = nextPage;
-  currentPage = nextPage;
-  updateSelectedBlock();
-  renderPage();
-}
-
-async function saveEditedPdf() {
-  if (!pdfDoc) return;
-
-  const sourceBytes = await pdfDoc.getData();
-  const pdfBytes = await PDFDocument.load(sourceBytes);
-  const font = await pdfBytes.embedFont(StandardFonts.Helvetica);
-
-  for (const block of blocks) {
-    if (!block || !block.text) continue;
-
-    const pageIndex = Math.max(0, (Number(block.pageNumber) || currentPage) - 1);
-    const page = pdfBytes.getPages()[pageIndex];
-    if (!page) continue;
-
-    page.drawText(block.text, {
-      x: block.x,
-      y: page.getHeight() - block.y - (block.height || 12),
-      size: 12,
-      font,
-      color: rgb(0, 0, 0),
-    });
+    pdfCanvas.width = state.viewport.width;
+    pdfCanvas.height = state.viewport.height;
+    maskCanvas.width = state.viewport.width;
+    maskCanvas.height = state.viewport.height;
+    pageInner.style.width = `${state.viewport.width}px`;
+    pageInner.style.height = `${state.viewport.height}px`;
+    await state.page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: state.viewport }).promise;
+    renderTextLayer();
+    setStatus(`${state.blocks.length} text items loaded.`);
+  } catch (error) {
+    console.error(error);
+    setStatus('PDF could not be opened.');
+    alert(`Unable to read the PDF file: ${error.message}`);
   }
+}
 
-  const output = await pdfBytes.save();
-  const blob = new Blob([output], { type: 'application/pdf' });
-  const url = URL.createObjectURL(blob);
+async function downloadPdf() {
+  if (!state.pdf) return;
+  const output = await PDFDocument.load(state.sourceBytes);
+  for (const block of state.blocks) {
+    if (block.text === block.originalText || !block.text) continue;
+    const page = output.getPages()[block.pageNumber - 1];
+    const maskHeight = Math.max(block.height * 1.25, block.fontSize * 1.25);
+    page.drawRectangle({
+      x: block.x - 1,
+      y: block.baseline - maskHeight * 0.15,
+      width: block.width + 2,
+      height: maskHeight,
+      color: rgb(1, 1, 1),
+    });
+    const font = await output.embedFont(block.fontWeight === '700' ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
+    page.drawText(block.text, { x: block.x, y: block.baseline, size: block.fontSize, font, color: rgb(0, 0, 0) });
+  }
+  const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
   const link = document.createElement('a');
   link.href = url;
   link.download = 'edited-document.pdf';
@@ -320,21 +168,12 @@ async function saveEditedPdf() {
   URL.revokeObjectURL(url);
 }
 
-pdfInput.addEventListener('change', (event) => {
-  const file = event.target.files && event.target.files[0];
-  loadPdf(file);
+input.addEventListener('change', (event) => openPdf(event.target.files?.[0]));
+save.addEventListener('click', downloadPdf);
+apply.addEventListener('click', () => {
+  const block = selectedBlock();
+  if (!block) return;
+  block.text = textValue.value;
+  renderTextLayer();
 });
-
-saveButton.addEventListener('click', saveEditedPdf);
-applyEditButton.addEventListener('click', applyBlockEdit);
-pageNumberInput.addEventListener('change', () => {
-  const page = Number(pageNumberInput.value) || 1;
-  currentPage = Math.min(Math.max(page, 1), pdfDoc ? pdfDoc.numPages : 1);
-  blocks = [];
-  selectedBlockIndex = -1;
-  updateSelectedBlock();
-  renderPage();
-});
-
-setupGlobalDragHandlers();
-updateSelectedBlock();
+pdfCanvas.addEventListener('click', () => selectBlock(-1));

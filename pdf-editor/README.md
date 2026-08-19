@@ -1,39 +1,20 @@
-# PDF Editor
+# PDF Text Editor
 
-A lightweight browser-based PDF editing app for cropping, annotating, saving, and rendering PDF pages directly in the browser.
+A browser-based PDF text editor built with PDF.js and pdf-lib.
 
-## Features
-
-- Upload a PDF file
-- Render pages in the browser
-- Annotate or highlight regions
-- Save the edited result
-- Simple static web app setup
-
-## Run locally
-
-1. Open the project folder in a browser or serve it locally with a simple static server.
-2. Open `index.html` in a browser.
-
-Example with Python:
+## Run
 
 ```bash
-python -m http.server 8000
+npm install
+npm run dev
 ```
 
-Then visit:
+Open the local Vite URL, choose a PDF, click extracted text, edit it inline, and download the result.
 
-```text
-http://localhost:8000
-```
+## Architecture
 
-## Stack
-
-- HTML
-- CSS
-- JavaScript
-- PDF.js style browser rendering
-
-## Notes
-
-This project is designed as a simple front-end editor prototype and can be extended with more tools and PDF manipulation features.
+- PDF.js renders the source page to a canvas.
+- A separate mask canvas hides only the selected original text.
+- A transparent text layer provides click targets.
+- The selected item becomes a positioned `contenteditable` inline editor.
+- pdf-lib exports changed text while leaving unchanged PDF content intact.

@@ -1,26 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { textItemToBlock } from '../src/text-layout.js';
 
-import { makeBlockFromPdfItem } from '../src/text-layout.js';
-
-test('makeBlockFromPdfItem uses the text item transform for the overlay box', () => {
-  const viewport = {
-    convertToViewportPoint(x, y) {
-      return [x, y];
-    },
-  };
-
-  const block = makeBlockFromPdfItem({
+test('text item becomes a baseline anchored editable block', () => {
+  const block = textItemToBlock({
     str: 'Hello',
     transform: [1, 0, 0, 1, 120, 220],
     width: 60,
     height: 12,
-  }, 1, viewport);
+  }, 1, 0);
 
-  assert.equal(block.pageNumber, 1);
-  assert.equal(block.text, 'Hello');
-  assert.equal(block.x, 120);
-  assert.equal(block.y, 208);
-  assert.equal(block.width, 60);
-  assert.equal(block.height, 12);
+  assert.deepEqual(
+    { text: block.text, originalText: block.originalText, x: block.x, baseline: block.baseline },
+    { text: 'Hello', originalText: 'Hello', x: 120, baseline: 220 },
+  );
 });
