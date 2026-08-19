@@ -18,9 +18,9 @@ body { margin: 0; min-height: 100vh; }
 .text-target:hover { border-color: #5d8cff; background: #5d8cff18; }
 #selection-box { position: absolute; z-index: 50; pointer-events: none; border: 1px solid #4169e1; background: #4169e126; }
 .inline-editor-wrapper { position: absolute; z-index: 20; pointer-events: auto; overflow: visible; }
-.inline-editor { display: block; min-width: 100%; width: max-content; height: 100%; outline: 2px solid #5d8cff; outline-offset: 2px; color: #000; white-space: pre; line-height: 1; text-decoration: none; font-family: sans-serif; }
+.inline-editor { display: block; min-width: 100%; width: max-content; height: 100%; outline: 2px solid #5d8cff; outline-offset: 2px; color: #000; white-space: pre; line-height: 1.219; text-decoration: none; font-family: sans-serif; }
 .edit-run { white-space: pre; }
-.edited-text { position: absolute; pointer-events: none; color: #000; white-space: pre; line-height: 1; text-decoration: none; overflow: visible; }
+.edited-text { position: absolute; pointer-events: none; color: #000; white-space: pre; line-height: 1.219; text-decoration: none; overflow: visible; }
 .inspector { padding: 16px; height: fit-content; position: sticky; top: 84px; }
 .inspector h1 { margin: 0 0 12px; font-size: 18px; }
 .format-toolbar { display: grid; gap: 10px; margin-bottom: 12px; }

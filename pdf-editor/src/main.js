@@ -23,7 +23,7 @@ const maskCanvas = $('mask-canvas');
 const textLayer = $('text-layer');
 const selectionBox = $('selection-box');
 
-const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [] };
+const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [], activeEditor: null };
 
 function setStatus(message) { status.textContent = message; }
 function selectedBlock() { return state.blocks[state.selected]; }
@@ -87,7 +87,7 @@ function makeEditor(block, index, box, maskContext) {
   editor.className = 'inline-editor';
   editor.contentEditable = 'true';
   editor.spellcheck = false;
-  editor.style.fontFamily = block.fontFamily;
+  editor.style.fontFamily = cssFontFamily(block);
   editor.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
   editor.style.fontWeight = block.fontWeight;
   editor.style.fontStyle = block.fontStyle;
@@ -96,7 +96,8 @@ function makeEditor(block, index, box, maskContext) {
 
   const run = document.createElement('span');
   run.className = 'edit-run';
-  run.textContent = block.text;
+  if (block.richHtml) run.innerHTML = block.richHtml;
+  else run.textContent = block.text;
   run.dataset.runIndex = '0';
   run.dataset.origWeight = block.fontWeight;
   run.dataset.origItalic = block.fontStyle === 'italic' ? 'true' : '';
@@ -104,6 +105,7 @@ function makeEditor(block, index, box, maskContext) {
   editor.appendChild(run);
   editor.addEventListener('input', () => {
     block.text = editor.textContent || '';
+    block.richHtml = editor.innerHTML;
     block.modified = true;
     syncInspector();
   });
@@ -112,6 +114,7 @@ function makeEditor(block, index, box, maskContext) {
   });
   wrapper.appendChild(editor);
   textLayer.appendChild(wrapper);
+  state.activeEditor = editor;
   requestAnimationFrame(() => editor.focus());
 }
 
@@ -120,12 +123,12 @@ function makeEditedText(block, box, maskContext) {
 
   const replacement = document.createElement('div');
   replacement.className = 'edited-text';
-  replacement.textContent = block.text;
+  replacement.innerHTML = block.richHtml || block.text;
   replacement.style.left = `${box.left}px`;
   replacement.style.top = `${box.top}px`;
   replacement.style.width = `${Math.max(box.width, 12)}px`;
   replacement.style.height = `${Math.max(box.height, 12)}px`;
-  replacement.style.fontFamily = block.fontFamily;
+  replacement.style.fontFamily = cssFontFamily(block);
   replacement.style.fontSize = `${Math.max(block.fontSize * state.viewport.scale, 8)}px`;
   replacement.style.fontWeight = block.fontWeight;
   replacement.style.fontStyle = block.fontStyle;
@@ -140,9 +143,15 @@ function paintMask(context, box) {
   context.fillRect(box.left - bleed, box.top - bleed, box.width + bleed * 2, box.height + bleed * 2);
 }
 
+function cssFontFamily(block) {
+  const fallback = block.fontFamily || 'sans-serif';
+  return block.fontFace ? `"${block.fontFace}", ${fallback}, sans-serif` : `${fallback}, sans-serif`;
+}
+
 function renderTextLayer() {
   textLayer.replaceChildren();
   textLayer.appendChild(selectionBox);
+  state.activeEditor = null;
   const maskContext = maskCanvas.getContext('2d');
   maskContext.clearRect(0, 0, maskCanvas.width, maskCanvas.height);
 
@@ -232,33 +241,18 @@ function fontMetadata(page, item) {
     const font = commonObjects?.has?.(item.fontName) ? commonObjects.get(item.fontName) : null;
     if (!font) return {};
 
-    const fontFamily = font.loadedName || font.fallbackName || font.name;
-    const measuredWeight = detectFontWeight(fontFamily, item.str, item.width, item.height);
+    const fontFamily = font.fallbackName || font.name;
+    const fontDescriptor = `${font.name || ''} ${font.fallbackName || ''}`;
 
     return {
-      fontWeight: font.bold || font.black || font.weight >= 700 ? '700' : measuredWeight,
+      fontWeight: font.bold || font.black || font.weight >= 700 || /bold|black|heavy|demi|semibold/i.test(fontDescriptor) ? '700' : '400',
       fontStyle: font.italic || font.style === 'italic' ? 'italic' : 'normal',
       fontFamily,
+      fontFace: font.loadedName || '',
     };
   } catch {
     return {};
   }
-}
-
-function detectFontWeight(fontFamily, text, pdfWidth, pdfHeight) {
-  if (!fontFamily || !text || !pdfWidth || !pdfHeight) return '400';
-
-  const canvas = document.createElement('canvas');
-  const context = canvas.getContext('2d');
-  const size = 100;
-  context.font = `400 ${size}px "${fontFamily}"`;
-  const normalWidth = context.measureText(text).width;
-  context.font = `700 ${size}px "${fontFamily}"`;
-  const boldWidth = context.measureText(text).width;
-  const targetWidth = Number(pdfWidth) * (size / Number(pdfHeight));
-
-  if (Math.abs(boldWidth - targetWidth) < Math.abs(normalWidth - targetWidth)) return '700';
-  return '400';
 }
 
 async function downloadPdf() {
@@ -275,16 +269,7 @@ async function downloadPdf() {
       height: maskHeight,
       color: rgb(1, 1, 1),
     });
-    const font = await output.embedFont(exportFont(block));
-    page.drawText(block.text, { x: block.x, y: block.baseline, size: block.fontSize, font, color: hexColor(block.fontColor) });
-    if (block.textDecoration === 'underline') {
-      page.drawLine({
-        start: { x: block.x, y: block.baseline - block.fontSize * 0.12 },
-        end: { x: block.x + block.width, y: block.baseline - block.fontSize * 0.12 },
-        thickness: Math.max(0.5, block.fontSize * 0.04),
-        color: hexColor(block.fontColor),
-      });
-    }
+    await drawRichText(page, output, block);
   }
   const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
   const link = document.createElement('a');
@@ -292,6 +277,61 @@ async function downloadPdf() {
   link.download = 'edited-document.pdf';
   link.click();
   URL.revokeObjectURL(url);
+}
+
+async function drawRichText(page, output, block) {
+  const runs = block.richHtml ? extractRichRuns(block) : [{
+    text: block.text,
+    fontWeight: block.fontWeight,
+    fontStyle: block.fontStyle,
+    textDecoration: block.textDecoration,
+    fontSize: block.fontSize,
+    fontFamily: block.fontFamily,
+    fontColor: block.fontColor,
+  }];
+  let x = block.x;
+  for (const run of runs) {
+    if (!run.text) continue;
+    const font = await output.embedFont(exportFont({ ...block, ...run }));
+    const color = hexColor(run.fontColor || block.fontColor);
+    page.drawText(run.text, { x, y: block.baseline, size: run.fontSize || block.fontSize, font, color });
+    const width = font.widthOfTextAtSize(run.text, run.fontSize || block.fontSize);
+    if (run.textDecoration === 'underline') {
+      page.drawLine({
+        start: { x, y: block.baseline - (run.fontSize || block.fontSize) * 0.12 },
+        end: { x: x + width, y: block.baseline - (run.fontSize || block.fontSize) * 0.12 },
+        thickness: Math.max(0.5, (run.fontSize || block.fontSize) * 0.04),
+        color,
+      });
+    }
+    x += width;
+  }
+}
+
+function extractRichRuns(block) {
+  const root = document.createElement('div');
+  root.innerHTML = block.richHtml;
+  const runs = [];
+  const walk = (node, inherited) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      runs.push({ ...inherited, text: node.nodeValue });
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const style = node.style;
+    const next = {
+      ...inherited,
+      fontWeight: node.matches('b,strong') || style.fontWeight === 'bold' || style.fontWeight === '700' ? '700' : style.fontWeight === 'normal' || style.fontWeight === '400' ? '400' : inherited.fontWeight,
+      fontStyle: node.matches('i,em') || style.fontStyle === 'italic' ? 'italic' : style.fontStyle === 'normal' ? 'normal' : inherited.fontStyle,
+      textDecoration: node.matches('u') || style.textDecoration === 'underline' ? 'underline' : style.textDecoration === 'none' ? 'none' : inherited.textDecoration,
+      fontSize: Number.parseFloat(style.fontSize) || inherited.fontSize,
+      fontFamily: style.fontFamily?.replaceAll('"', '') || inherited.fontFamily,
+      fontColor: style.color || inherited.fontColor,
+    };
+    node.childNodes.forEach((child) => walk(child, next));
+  };
+  root.childNodes.forEach((child) => walk(child, block));
+  return runs;
 }
 
 function exportFont(block) {
@@ -314,6 +354,10 @@ function exportFont(block) {
 }
 
 function hexColor(value = '#000000') {
+  if (value.startsWith('rgb')) {
+    const channels = value.match(/[\d.]+/g)?.map(Number) || [];
+    return rgb((channels[0] || 0) / 255, (channels[1] || 0) / 255, (channels[2] || 0) / 255);
+  }
   const hex = value.replace('#', '');
   const red = Number.parseInt(hex.slice(0, 2), 16) / 255;
   const green = Number.parseInt(hex.slice(2, 4), 16) / 255;
@@ -333,15 +377,52 @@ apply.addEventListener('click', () => {
   renderTextLayer();
 });
 function updateSelectedStyle(property, value) {
+  if (formatActiveEditor(property, value)) return;
   const blocks = selectedBlocks();
   if (!blocks.length) return;
   recordHistory();
   blocks.forEach((block) => {
     block[property] = value;
+    if (property === 'fontWeight' && value === '400') block.richHtml = '';
+    if (property === 'fontStyle' && value === 'normal') block.richHtml = '';
+    if (property === 'textDecoration' && value === 'none') block.richHtml = '';
     block.modified = true;
   });
   syncInspector();
   renderTextLayer();
+}
+
+function formatActiveEditor(property, value) {
+  const editor = state.activeEditor;
+  const selection = window.getSelection();
+  if (!editor || !selection?.rangeCount || selection.isCollapsed || !editor.contains(selection.anchorNode)) return false;
+
+  const command = {
+    fontWeight: 'bold',
+    fontStyle: 'italic',
+    textDecoration: 'underline',
+    fontFamily: 'fontName',
+    fontColor: 'foreColor',
+    fontSize: 'fontSize',
+  }[property];
+  if (!command) return false;
+
+  recordHistory();
+  document.execCommand(command, false, property === 'fontSize' ? '7' : property === 'fontFamily' ? value : undefined);
+  if (property === 'fontSize') {
+    const fonts = editor.querySelectorAll('font[size="7"]');
+    fonts.forEach((font) => {
+      font.removeAttribute('size');
+      font.style.fontSize = `${value}px`;
+    });
+  }
+  const block = selectedBlock();
+  if (block) {
+    block.text = editor.textContent || '';
+    block.richHtml = editor.innerHTML;
+    block.modified = true;
+  }
+  return true;
 }
 fontFamily.addEventListener('change', () => updateSelectedStyle('fontFamily', fontFamily.value));
 fontSize.addEventListener('change', () => updateSelectedStyle('fontSize', Math.max(6, Number(fontSize.value) || 12)));
