@@ -205,7 +205,7 @@ async function openPdf(file) {
   if (!file) return;
   try {
     state.sourceBytes = new Uint8Array(await file.arrayBuffer());
-    state.pdf = await getDocument({ data: state.sourceBytes }).promise;
+    state.pdf = await getDocument({ data: state.sourceBytes.slice() }).promise;
     state.page = await state.pdf.getPage(1);
     state.viewport = state.page.getViewport({ scale: Math.min(2, 1000 / state.page.getViewport({ scale: 1 }).width) });
     state.selected = -1;
@@ -256,27 +256,42 @@ function fontMetadata(page, item) {
 }
 
 async function downloadPdf() {
-  if (!state.pdf) return;
-  const output = await PDFDocument.load(state.sourceBytes);
-  for (const block of state.blocks) {
-    if (!block.modified || !block.text) continue;
-    const page = output.getPages()[block.pageNumber - 1];
-    const maskHeight = Math.max(block.height * 1.25, block.fontSize * 1.25);
-    page.drawRectangle({
-      x: block.x - 1,
-      y: block.baseline - maskHeight * 0.15,
-      width: block.width + 2,
-      height: maskHeight,
-      color: rgb(1, 1, 1),
-    });
-    await drawRichText(page, output, block);
+  if (!state.pdf || !state.sourceBytes) {
+    setStatus('Open a PDF before downloading.');
+    return;
   }
-  const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = 'edited-document.pdf';
-  link.click();
-  URL.revokeObjectURL(url);
+
+  try {
+    setStatus('Preparing PDF download...');
+    const output = await PDFDocument.load(state.sourceBytes);
+    for (const block of state.blocks) {
+      if (!block.modified) continue;
+      const page = output.getPages()[block.pageNumber - 1];
+      const maskHeight = Math.max(block.height * 1.25, block.fontSize * 1.25);
+      page.drawRectangle({
+        x: block.x - 1,
+        y: block.baseline - maskHeight * 0.15,
+        width: block.width + 2,
+        height: maskHeight,
+        color: rgb(1, 1, 1),
+      });
+      if (block.text) await drawRichText(page, output, block);
+    }
+    const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = 'edited-document.pdf';
+    link.style.display = 'none';
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    setStatus('PDF downloaded.');
+  } catch (error) {
+    console.error(error);
+    setStatus('PDF could not be downloaded.');
+    alert(`Unable to create the PDF download: ${error.message}`);
+  }
 }
 
 async function drawRichText(page, output, block) {
