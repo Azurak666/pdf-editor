@@ -36,6 +36,8 @@ const textLayer = $('text-layer');
 const selectionBox = $('selection-box');
 const documentTitle = $('document-title');
 const pageCount = $('page-count');
+const inspectorEyebrow = $('inspector-eyebrow');
+const inspectorTitle = $('inspector-title');
 const fontBytesCache = new Map();
 
 const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [], activeEditor: null, addingText: false, draggingBlock: -1, dragStart: null, dragOrigin: null, dragTarget: null, dragMoved: false };
@@ -89,9 +91,14 @@ function redo() {
 function syncInspector() {
   const block = selectedBlock();
   const blocks = selectedBlocks();
+  const addMode = state.addingText;
+  inspectorEyebrow.textContent = addMode ? 'Add text' : 'Properties';
+  inspectorTitle.textContent = addMode ? 'Add text' : 'Edit text';
+  apply.textContent = addMode ? 'Place text on page' : 'Apply changes';
+  textValue.placeholder = addMode ? 'Type text after placing it' : 'Select text in the PDF';
   textValue.value = block?.text || '';
-  fontFamily.value = block?.fontFamily || 'sans-serif';
-  fontSize.value = block?.fontSize || '';
+  fontFamily.value = block?.fontFamily || (addMode ? 'Poppins' : 'sans-serif');
+  fontSize.value = block?.fontSize || (addMode ? 12 : '');
   fontColor.value = block?.fontColor || '#000000';
   boldButton.classList.toggle('active', blocks.length > 0 && blocks.every((item) => item.fontWeight === '700'));
   italicButton.classList.toggle('active', blocks.length > 0 && blocks.every((item) => item.fontStyle === 'italic'));
@@ -114,6 +121,7 @@ function toggleAddText() {
   }
   state.addingText = !state.addingText;
   addTextButton.classList.toggle('active', state.addingText);
+  syncInspector();
   setStatus(state.addingText ? 'Click on the page to place text.' : 'Text placement cancelled.');
 }
 
@@ -124,7 +132,16 @@ function deleteSelected() {
     return;
   }
   recordHistory();
-  state.blocks = state.blocks.filter((block) => !blocks.includes(block));
+  blocks.forEach((block) => {
+    if (block.isNew) {
+      state.blocks = state.blocks.filter((item) => item !== block);
+      return;
+    }
+    block.text = '';
+    block.richHtml = '';
+    block.deleted = true;
+    block.modified = true;
+  });
   state.selected = -1;
   state.selectedIndices = new Set();
   state.activeEditor = null;
@@ -152,27 +169,27 @@ function createTextAt(event) {
   const rect = pageInner.getBoundingClientRect();
   const screenX = event.clientX - rect.left;
   const screenY = event.clientY - rect.top;
-  const fontSize = 12;
+  const selectedFontSize = Math.max(6, Number(fontSize.value) || 12);
   const [x, top] = state.viewport.convertToPdfPoint(screenX, screenY);
   const block = {
     id: `page-1-added-${Date.now()}`,
     pageNumber: 1,
     x,
-    baseline: top - fontSize,
+    baseline: top - selectedFontSize,
     originalX: x,
     originalBaseline: top - fontSize,
     width: 120,
-    height: fontSize,
+    height: selectedFontSize,
     text: '',
     originalText: '',
     richHtml: '',
-    fontFamily: 'Poppins',
+    fontFamily: fontFamily.value || 'Poppins',
     fontFace: '',
-    fontSize,
-    fontWeight: '400',
-    fontStyle: 'normal',
-    textDecoration: 'none',
-    fontColor: '#000000',
+    fontSize: selectedFontSize,
+    fontWeight: boldButton.classList.contains('active') ? '700' : '400',
+    fontStyle: italicButton.classList.contains('active') ? 'italic' : 'normal',
+    textDecoration: underlineButton.classList.contains('active') ? 'underline' : 'none',
+    fontColor: fontColor.value || '#000000',
     isNew: true,
     modified: true,
   };
@@ -286,6 +303,10 @@ function renderTextLayer() {
 
   state.blocks.forEach((block, index) => {
     const box = blockRectangle(state.viewport, block);
+    if (block.deleted) {
+      paintMask(maskContext, box);
+      return;
+    }
     const isEditing = index === state.selected && state.selectedIndices.size === 1;
     const target = document.createElement('div');
     target.className = 'text-target';

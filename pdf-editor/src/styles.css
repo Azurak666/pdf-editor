@@ -49,7 +49,7 @@ button { cursor: pointer; }
 .inline-editor { display: block; min-width: 100%; width: max-content; height: 100%; outline: 1px solid var(--blue); outline-offset: 1px; color: #000; background: #fff8; white-space: pre; line-height: 1.219; font-family: sans-serif; }
 .edit-run { white-space: pre; }
 .edited-text { position: absolute; pointer-events: none; color: #000; white-space: pre; line-height: 1.219; overflow: visible; }
-.inspector { height: fit-content; min-height: 100%; padding: 24px 20px; border-left: 1px solid var(--line); background: #fff; }
+.inspector { position: sticky; top: 0; align-self: start; height: calc(100vh - 106px); overflow-y: auto; padding: 24px 20px; border-left: 1px solid var(--line); background: #fff; }
 .inspector-heading { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 24px; }
 .eyebrow { display: block; margin-bottom: 5px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .inspector h1 { margin: 0; font-size: 19px; }
@@ -67,5 +67,5 @@ button { cursor: pointer; }
 .delete-button { width: 100%; margin-top: 8px; border: 1px solid #d65b5b; border-radius: 4px; padding: 9px; color: #b33d3d; background: #fff; font-size: 12px; font-weight: 700; }
 .delete-button:hover { color: #fff; background: #c94b4b; }
 .inspector-tip { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11px; line-height: 1.5; }
-@media (max-width: 900px) { .workspace { grid-template-columns: 64px minmax(0, 1fr); } .inspector { grid-column: 1 / -1; min-height: auto; border-top: 1px solid var(--line); border-left: 0; } }
+@media (max-width: 700px) { .workspace { grid-template-columns: 64px minmax(0, 1fr); } .inspector { position: static; grid-column: 1 / -1; height: auto; min-height: auto; border-top: 1px solid var(--line); border-left: 0; } }
 @media (max-width: 620px) { .app-menu { display: none; } .document-bar { padding: 0 14px; } .document-meta { display: none; } .viewer-scroll { padding: 20px 10px 50px; } }
