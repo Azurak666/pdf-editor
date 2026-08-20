@@ -1,14 +1,26 @@
 import { getDocument, GlobalWorkerOptions } from 'pdfjs-dist';
+import mupdf from 'mupdf';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import fontkit from '@pdf-lib/fontkit';
+import poppinsRegularUrl from '@fontsource/poppins/files/poppins-latin-400-normal.woff2?url';
+import poppinsBoldUrl from '@fontsource/poppins/files/poppins-latin-700-normal.woff2?url';
+import poppinsItalicUrl from '@fontsource/poppins/files/poppins-latin-400-italic.woff2?url';
+import poppinsBoldItalicUrl from '@fontsource/poppins/files/poppins-latin-700-italic.woff2?url';
+import '@fontsource/poppins/400.css';
+import '@fontsource/poppins/700.css';
 import './styles.css';
-import { blockRectangle, textItemToBlock } from './text-layout.js';
+import { blockRectangle, mergeTextBlocks, textItemToBlock } from './text-layout.js';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
 const $ = (id) => document.getElementById(id);
 const input = $('pdf-input');
 const save = $('save-button');
+const undoButton = $('undo-button');
+const redoButton = $('redo-button');
+const addTextButton = $('add-text-button');
 const apply = $('apply-button');
+const deleteButton = $('delete-button');
 const textValue = $('text-value');
 const fontFamily = $('font-family');
 const fontSize = $('font-size');
@@ -22,12 +34,32 @@ const pdfCanvas = $('pdf-canvas');
 const maskCanvas = $('mask-canvas');
 const textLayer = $('text-layer');
 const selectionBox = $('selection-box');
+const documentTitle = $('document-title');
+const pageCount = $('page-count');
+const fontBytesCache = new Map();
 
-const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [], activeEditor: null };
+const state = { pdf: null, sourceBytes: null, page: null, viewport: null, blocks: [], selected: -1, selectedIndices: new Set(), selecting: false, selectionStart: null, selectionEnd: null, history: [], future: [], activeEditor: null, addingText: false, draggingBlock: -1, dragStart: null, dragOrigin: null, dragTarget: null, dragMoved: false };
 
 function setStatus(message) { status.textContent = message; }
 function selectedBlock() { return state.blocks[state.selected]; }
 function selectedBlocks() { return [...state.selectedIndices].map((index) => state.blocks[index]).filter(Boolean); }
+
+function syncModified(block) {
+  if (block.isNew) {
+    block.modified = Boolean(block.text);
+    return;
+  }
+  block.modified = block.text !== block.originalText
+    || block.fontFamily !== block.originalFontFamily
+    || block.fontSize !== block.originalFontSize
+    || block.fontWeight !== block.originalFontWeight
+    || block.fontStyle !== block.originalFontStyle
+    || block.textDecoration !== block.originalTextDecoration
+    || block.fontColor !== block.originalFontColor
+    || block.x !== block.originalX
+    || block.baseline !== block.originalBaseline
+    || Boolean(block.richHtml?.match(/<[^>]+>/));
+}
 
 function snapshot() { return JSON.stringify(state.blocks); }
 
@@ -67,10 +99,94 @@ function syncInspector() {
 }
 
 function selectBlock(index) {
+  state.addingText = false;
+  addTextButton.classList.remove('active');
   state.selected = index;
   state.selectedIndices = index >= 0 ? new Set([index]) : new Set();
   syncInspector();
   renderTextLayer();
+}
+
+function toggleAddText() {
+  if (!state.pdf) {
+    setStatus('Open a PDF before adding text.');
+    return;
+  }
+  state.addingText = !state.addingText;
+  addTextButton.classList.toggle('active', state.addingText);
+  setStatus(state.addingText ? 'Click on the page to place text.' : 'Text placement cancelled.');
+}
+
+function deleteSelected() {
+  const blocks = selectedBlocks();
+  if (!blocks.length) {
+    setStatus('Select text before deleting.');
+    return;
+  }
+  recordHistory();
+  state.blocks = state.blocks.filter((block) => !blocks.includes(block));
+  state.selected = -1;
+  state.selectedIndices = new Set();
+  state.activeEditor = null;
+  syncInspector();
+  renderTextLayer();
+  setStatus(`${blocks.length} text item${blocks.length === 1 ? '' : 's'} deleted.`);
+}
+
+function startBlockDrag(event, index, target) {
+  if (event.button !== 0 || state.addingText) return;
+  state.selected = index;
+  state.selectedIndices = new Set([index]);
+  syncInspector();
+  state.draggingBlock = index;
+  state.dragStart = { x: event.clientX, y: event.clientY };
+  state.dragOrigin = { x: state.blocks[index].x, baseline: state.blocks[index].baseline };
+  state.dragTarget = target;
+  state.dragMoved = false;
+  event.stopPropagation();
+  event.preventDefault();
+}
+
+function createTextAt(event) {
+  if (!state.viewport) return;
+  const rect = pageInner.getBoundingClientRect();
+  const screenX = event.clientX - rect.left;
+  const screenY = event.clientY - rect.top;
+  const fontSize = 12;
+  const [x, top] = state.viewport.convertToPdfPoint(screenX, screenY);
+  const block = {
+    id: `page-1-added-${Date.now()}`,
+    pageNumber: 1,
+    x,
+    baseline: top - fontSize,
+    originalX: x,
+    originalBaseline: top - fontSize,
+    width: 120,
+    height: fontSize,
+    text: '',
+    originalText: '',
+    richHtml: '',
+    fontFamily: 'Poppins',
+    fontFace: '',
+    fontSize,
+    fontWeight: '400',
+    fontStyle: 'normal',
+    textDecoration: 'none',
+    fontColor: '#000000',
+    isNew: true,
+    modified: true,
+  };
+  recordHistory();
+  state.blocks.push(block);
+  state.addingText = false;
+  addTextButton.classList.remove('active');
+  setStatus('Type text, then apply the change.');
+  state.selected = state.blocks.length - 1;
+  state.selectedIndices = new Set([state.selected]);
+  syncInspector();
+  renderTextLayer();
+  event.preventDefault();
+  event.stopPropagation();
 }
 
 function makeEditor(block, index, box, maskContext) {
@@ -79,7 +195,7 @@ function makeEditor(block, index, box, maskContext) {
   const wrapper = document.createElement('div');
   wrapper.className = 'inline-editor-wrapper';
   wrapper.style.left = `${box.left}px`;
-  wrapper.style.top = `${box.top}px`;
+  wrapper.style.top = `${box.top + editorLeading(block)}px`;
   wrapper.style.width = `${Math.max(box.width, 12)}px`;
   wrapper.style.height = `${Math.max(box.height, 12)}px`;
 
@@ -106,7 +222,7 @@ function makeEditor(block, index, box, maskContext) {
   editor.addEventListener('input', () => {
     block.text = editor.textContent || '';
     block.richHtml = editor.innerHTML;
-    block.modified = true;
+    syncModified(block);
     syncInspector();
   });
   editor.addEventListener('beforeinput', (event) => {
@@ -125,7 +241,7 @@ function makeEditedText(block, box, maskContext) {
   replacement.className = 'edited-text';
   replacement.innerHTML = block.richHtml || block.text;
   replacement.style.left = `${box.left}px`;
-  replacement.style.top = `${box.top}px`;
+  replacement.style.top = `${box.top + editorLeading(block)}px`;
   replacement.style.width = `${Math.max(box.width, 12)}px`;
   replacement.style.height = `${Math.max(box.height, 12)}px`;
   replacement.style.fontFamily = cssFontFamily(block);
@@ -137,13 +253,26 @@ function makeEditedText(block, box, maskContext) {
   textLayer.appendChild(replacement);
 }
 
+function editorLeading(block) {
+  const fontSize = Math.max(block.fontSize * state.viewport.scale, 8);
+  return fontSize * (1.219 - 1) / 2;
+}
+
 function paintMask(context, box) {
-  const bleed = 4;
+  const horizontalBleed = 3;
+  const topBleed = 1;
+  const bottomBleed = 6;
   context.fillStyle = '#fff';
-  context.fillRect(box.left - bleed, box.top - bleed, box.width + bleed * 2, box.height + bleed * 2);
+  context.fillRect(
+    box.left - horizontalBleed,
+    box.top - topBleed,
+    box.width + horizontalBleed * 2,
+    box.height + topBleed + bottomBleed,
+  );
 }
 
 function cssFontFamily(block) {
+  if (block.fontFamily === 'Poppins') return 'Poppins';
   const fallback = block.fontFamily || 'sans-serif';
   return block.fontFace ? `"${block.fontFace}", ${fallback}, sans-serif` : `${fallback}, sans-serif`;
 }
@@ -157,6 +286,7 @@ function renderTextLayer() {
 
   state.blocks.forEach((block, index) => {
     const box = blockRectangle(state.viewport, block);
+    const isEditing = index === state.selected && state.selectedIndices.size === 1;
     const target = document.createElement('div');
     target.className = 'text-target';
     if (state.selectedIndices.has(index)) target.classList.add('selected');
@@ -169,9 +299,12 @@ function renderTextLayer() {
       event.stopPropagation();
       selectBlock(index);
     });
-    target.addEventListener('pointerdown', (event) => event.stopPropagation());
-    textLayer.appendChild(target);
-    if (index === state.selected && state.selectedIndices.size === 1) {
+    target.addEventListener('pointerdown', (event) => {
+      if (state.addingText) createTextAt(event);
+      else startBlockDrag(event, index, target);
+    });
+    if (!isEditing) textLayer.appendChild(target);
+    if (isEditing) {
       makeEditor(block, index, box, maskContext);
     } else if (block.modified) {
       makeEditedText(block, box, maskContext);
@@ -211,6 +344,8 @@ async function openPdf(file) {
     state.selected = -1;
     state.history = [];
     state.future = [];
+    documentTitle.textContent = file.name;
+    pageCount.textContent = `${state.pdf.numPages} page${state.pdf.numPages === 1 ? '' : 's'}`;
 
     pdfCanvas.width = state.viewport.width;
     pdfCanvas.height = state.viewport.height;
@@ -220,11 +355,11 @@ async function openPdf(file) {
     pageInner.style.height = `${state.viewport.height}px`;
     await state.page.render({ canvasContext: pdfCanvas.getContext('2d'), viewport: state.viewport }).promise;
     const content = await state.page.getTextContent();
-    state.blocks = content.items.map((item, index) => textItemToBlock({
+    state.blocks = mergeTextBlocks(content.items.map((item, index) => textItemToBlock({
       ...item,
       fontFamily: content.styles?.[item.fontName]?.fontFamily,
       ...fontMetadata(state.page, item),
-    }, 1, index)).filter(Boolean);
+    }, 1, index)).filter(Boolean));
     state.history.push(snapshot());
     renderTextLayer();
     setStatus(`${state.blocks.length} text items loaded.`);
@@ -241,7 +376,7 @@ function fontMetadata(page, item) {
     const font = commonObjects?.has?.(item.fontName) ? commonObjects.get(item.fontName) : null;
     if (!font) return {};
 
-    const fontFamily = font.fallbackName || font.name;
+    const fontFamily = /poppins/i.test(font.name || '') ? 'Poppins' : font.fallbackName || font.name;
     const fontDescriptor = `${font.name || ''} ${font.fallbackName || ''}`;
 
     return {
@@ -263,18 +398,12 @@ async function downloadPdf() {
 
   try {
     setStatus('Preparing PDF download...');
-    const output = await PDFDocument.load(state.sourceBytes);
+    const redactedBytes = await redactEditedText(state.sourceBytes);
+    const output = await PDFDocument.load(redactedBytes);
+    output.registerFontkit(fontkit);
     for (const block of state.blocks) {
       if (!block.modified) continue;
       const page = output.getPages()[block.pageNumber - 1];
-      const maskHeight = Math.max(block.height * 1.25, block.fontSize * 1.25);
-      page.drawRectangle({
-        x: block.x - 1,
-        y: block.baseline - maskHeight * 0.15,
-        width: block.width + 2,
-        height: maskHeight,
-        color: rgb(1, 1, 1),
-      });
       if (block.text) await drawRichText(page, output, block);
     }
     const url = URL.createObjectURL(new Blob([await output.save()], { type: 'application/pdf' }));
@@ -294,6 +423,55 @@ async function downloadPdf() {
   }
 }
 
+async function redactEditedText(sourceBytes) {
+  const document = mupdf.Document.openDocument(sourceBytes);
+  const redactionsByPage = new Map();
+  state.blocks.filter((block) => block.modified).forEach((block) => {
+    if (!redactionsByPage.has(block.pageNumber - 1)) redactionsByPage.set(block.pageNumber - 1, []);
+    redactionsByPage.get(block.pageNumber - 1).push(block);
+  });
+
+  redactionsByPage.forEach((blocks, pageNumber) => {
+    const page = document.loadPage(pageNumber);
+    const boundsByText = getMuPdfTextBounds(page);
+    blocks.forEach((block) => {
+      const bounds = boundsByText.get(block.originalText);
+      if (!bounds) return;
+      const redaction = page.createAnnotation('Redact');
+      redaction.setRect([bounds[0] - 1, bounds[1] - 1, bounds[2] + 1, bounds[3] + 1]);
+      redaction.update();
+    });
+    page.applyRedactions(false, mupdf.PDFPage.REDACT_IMAGE_NONE, mupdf.PDFPage.REDACT_LINE_ART_NONE, mupdf.PDFPage.REDACT_TEXT_REMOVE);
+    page.update();
+  });
+
+  const result = document.saveToBuffer({ garbage: 4 }).asUint8Array();
+  document.destroy();
+  return result;
+}
+
+function getMuPdfTextBounds(page) {
+  const bounds = new Map();
+  let currentLine = '';
+  let currentBounds = null;
+  page.toStructuredText().walk({
+    beginLine: () => {
+      currentLine = '';
+      currentBounds = null;
+    },
+    onChar: (character, origin, font, size, quad) => {
+      currentLine += character;
+      const points = [quad[0], quad[1], quad[2], quad[3], quad[4], quad[5], quad[6], quad[7]];
+      const charBounds = [Math.min(points[0], points[2], points[4], points[6]), Math.min(points[1], points[3], points[5], points[7]), Math.max(points[0], points[2], points[4], points[6]), Math.max(points[1], points[3], points[5], points[7])];
+      currentBounds = currentBounds ? [Math.min(currentBounds[0], charBounds[0]), Math.min(currentBounds[1], charBounds[1]), Math.max(currentBounds[2], charBounds[2]), Math.max(currentBounds[3], charBounds[3])] : charBounds;
+    },
+    endLine: () => {
+      if (currentLine && currentBounds) bounds.set(currentLine, currentBounds);
+    },
+  });
+  return bounds;
+}
+
 async function drawRichText(page, output, block) {
   const runs = block.richHtml ? extractRichRuns(block) : [{
     text: block.text,
@@ -307,7 +485,7 @@ async function drawRichText(page, output, block) {
   let x = block.x;
   for (const run of runs) {
     if (!run.text) continue;
-    const font = await output.embedFont(exportFont({ ...block, ...run }));
+    const font = await output.embedFont(await exportFont({ ...block, ...run }));
     const color = hexColor(run.fontColor || block.fontColor);
     page.drawText(run.text, { x, y: block.baseline, size: run.fontSize || block.fontSize, font, color });
     const width = font.widthOfTextAtSize(run.text, run.fontSize || block.fontSize);
@@ -349,7 +527,8 @@ function extractRichRuns(block) {
   return runs;
 }
 
-function exportFont(block) {
+async function exportFont(block) {
+  if (block.fontFamily === 'Poppins') return loadPoppinsFont(block);
   if (block.fontFamily === 'Times New Roman') {
     if (block.fontWeight === '700' && block.fontStyle === 'italic') return StandardFonts.TimesRomanBoldItalic;
     if (block.fontWeight === '700') return StandardFonts.TimesRomanBold;
@@ -368,6 +547,22 @@ function exportFont(block) {
   return StandardFonts.Helvetica;
 }
 
+async function loadPoppinsFont(block) {
+  const variant = block.fontWeight === '700'
+    ? block.fontStyle === 'italic' ? 'bold-italic' : 'bold'
+    : block.fontStyle === 'italic' ? 'italic' : 'regular';
+  if (!fontBytesCache.has(variant)) {
+    const url = {
+      regular: poppinsRegularUrl,
+      bold: poppinsBoldUrl,
+      italic: poppinsItalicUrl,
+      'bold-italic': poppinsBoldItalicUrl,
+    }[variant];
+    fontBytesCache.set(variant, fetch(url).then((response) => response.arrayBuffer()));
+  }
+  return fontBytesCache.get(variant);
+}
+
 function hexColor(value = '#000000') {
   if (value.startsWith('rgb')) {
     const channels = value.match(/[\d.]+/g)?.map(Number) || [];
@@ -382,12 +577,16 @@ function hexColor(value = '#000000') {
 
 input.addEventListener('change', (event) => openPdf(event.target.files?.[0]));
 save.addEventListener('click', downloadPdf);
+undoButton.addEventListener('click', undo);
+redoButton.addEventListener('click', redo);
+addTextButton.addEventListener('click', toggleAddText);
+deleteButton.addEventListener('click', deleteSelected);
 apply.addEventListener('click', () => {
   if (!selectedBlocks().length) return;
   recordHistory();
   selectedBlocks().forEach((item) => {
     item.text = textValue.value;
-    item.modified = true;
+    syncModified(item);
   });
   renderTextLayer();
 });
@@ -401,7 +600,7 @@ function updateSelectedStyle(property, value) {
     if (property === 'fontWeight' && value === '400') block.richHtml = '';
     if (property === 'fontStyle' && value === 'normal') block.richHtml = '';
     if (property === 'textDecoration' && value === 'none') block.richHtml = '';
-    block.modified = true;
+    syncModified(block);
   });
   syncInspector();
   renderTextLayer();
@@ -435,7 +634,7 @@ function formatActiveEditor(property, value) {
   if (block) {
     block.text = editor.textContent || '';
     block.richHtml = editor.innerHTML;
-    block.modified = true;
+    syncModified(block);
   }
   return true;
 }
@@ -463,6 +662,10 @@ window.addEventListener('keydown', (event) => {
   }
 });
 textLayer.addEventListener('pointerdown', (event) => {
+  if (state.addingText) {
+    createTextAt(event);
+    return;
+  }
   if (event.target !== textLayer) return;
   const rect = pageInner.getBoundingClientRect();
   state.selecting = true;
@@ -477,6 +680,21 @@ textLayer.addEventListener('pointerdown', (event) => {
 });
 
 document.addEventListener('pointermove', (event) => {
+  if (state.draggingBlock >= 0) {
+    const block = state.blocks[state.draggingBlock];
+    if (!block || !state.dragTarget || !state.viewport) return;
+    const scale = state.viewport.scale;
+    const deltaX = (event.clientX - state.dragStart.x) / scale;
+    const deltaY = (event.clientY - state.dragStart.y) / scale;
+    state.dragMoved = Math.abs(deltaX) > 2 || Math.abs(deltaY) > 2;
+    block.x = state.dragOrigin.x + deltaX;
+    block.baseline = state.dragOrigin.baseline - deltaY;
+    syncModified(block);
+    const box = blockRectangle(state.viewport, block);
+    state.dragTarget.style.left = `${box.left}px`;
+    state.dragTarget.style.top = `${box.top}px`;
+    return;
+  }
   if (!state.selecting) return;
   const rect = pageInner.getBoundingClientRect();
   state.selectionEnd = { x: event.clientX - rect.left, y: event.clientY - rect.top };
@@ -489,7 +707,23 @@ document.addEventListener('pointermove', (event) => {
 });
 
 document.addEventListener('pointerup', () => {
+  if (state.draggingBlock >= 0) {
+    if (state.dragMoved) recordHistory();
+    state.draggingBlock = -1;
+    state.dragStart = null;
+    state.dragOrigin = null;
+    state.dragTarget = null;
+    state.dragMoved = false;
+    renderTextLayer();
+    return;
+  }
   if (state.selecting) finishMarquee();
 });
 
 pdfCanvas.addEventListener('click', () => selectBlock(-1));
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Delete' && document.activeElement !== textValue && document.activeElement?.contentEditable !== 'true') {
+    event.preventDefault();
+    deleteSelected();
+  }
+});

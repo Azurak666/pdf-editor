@@ -13,6 +13,8 @@ export function textItemToBlock(item, pageNumber, index) {
     pageNumber,
     x: Number(transform[4]) || 0,
     baseline: Number(transform[5]) || 0,
+    originalX: Number(transform[4]) || 0,
+    originalBaseline: Number(transform[5]) || 0,
     width: Math.max(Number(item.width) || text.length * 6, 8),
     height,
     text,
@@ -25,8 +27,47 @@ export function textItemToBlock(item, pageNumber, index) {
     fontStyle: inferredStyle,
     textDecoration: 'none',
     fontColor: '#000000',
+    originalFontFamily: item.fontFamily || 'sans-serif',
+    originalFontSize: height,
+    originalFontWeight: inferredWeight,
+    originalFontStyle: inferredStyle,
+    originalTextDecoration: 'none',
+    originalFontColor: '#000000',
     modified: false,
   };
+}
+
+export function mergeTextBlocks(blocks) {
+  const merged = [];
+  const ordered = [...blocks].sort((left, right) => (
+    left.pageNumber - right.pageNumber
+    || right.baseline - left.baseline
+    || left.x - right.x
+  ));
+
+  ordered.forEach((block) => {
+    const previous = merged[merged.length - 1];
+    const sameLine = previous
+      && previous.pageNumber === block.pageNumber
+      && Math.abs(previous.baseline - block.baseline) <= 1
+      && Math.abs(previous.fontSize - block.fontSize) <= 1
+      && previous.fontFamily === block.fontFamily
+      && previous.fontWeight === block.fontWeight
+      && previous.fontStyle === block.fontStyle
+      && block.x - (previous.x + previous.width) <= Math.max(1, block.fontSize * 0.08)
+      && block.x >= previous.x;
+
+    if (!sameLine) {
+      merged.push(block);
+      return;
+    }
+
+    previous.text += block.text;
+    previous.originalText += block.originalText;
+    previous.width = block.x + block.width - previous.x;
+  });
+
+  return merged;
 }
 
 export function blockRectangle(viewport, block) {

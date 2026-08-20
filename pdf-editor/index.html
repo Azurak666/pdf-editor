@@ -3,15 +3,29 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>PDF Text Editor</title>
+    <title>PDF Studio</title>
   </head>
   <body>
-    <header class="toolbar">
-      <label class="button primary">Open PDF<input id="pdf-input" type="file" accept="application/pdf" /></label>
-      <button id="save-button" type="button">Download PDF</button>
-      <span id="status">Choose a PDF to begin.</span>
+    <header class="app-bar">
+      <div class="brand"><span class="brand-mark">P</span><span>PDF Studio</span></div>
+      <div class="app-actions">
+        <button id="undo-button" class="icon-button" type="button" aria-label="Undo">Undo</button>
+        <button id="redo-button" class="icon-button" type="button" aria-label="Redo">Redo</button>
+        <span class="app-divider"></span>
+        <label class="button primary compact">Open PDF<input id="pdf-input" type="file" accept="application/pdf" /></label>
+        <button id="save-button" class="button primary compact" type="button">Download</button>
+      </div>
     </header>
+    <div class="document-bar">
+      <div class="document-name"><span class="document-dot"></span><span id="document-title">Untitled document</span></div>
+      <span id="status">Open a PDF to begin.</span>
+      <div class="document-meta"><span id="page-count">Page 1</span><span class="meta-divider"></span><span>PDF</span></div>
+    </div>
     <main class="workspace">
+      <aside class="tool-rail" aria-label="Tools">
+        <button class="rail-tool active" type="button" aria-label="Edit text"><span class="rail-icon">T</span><span>Edit</span></button>
+        <button id="add-text-button" class="rail-tool" type="button" aria-label="Add text"><span class="rail-icon">+</span><span>Add text</span></button>
+      </aside>
       <section class="viewer-panel">
         <div class="viewer-scroll">
           <div id="page-inner">
@@ -22,7 +36,7 @@
         </div>
       </section>
       <aside class="inspector">
-        <h1>Text editor</h1>
+        <div class="inspector-heading"><div><span class="eyebrow">Properties</span><h1>Edit text</h1></div><button class="close-panel" type="button" aria-label="Close properties">x</button></div>
         <div class="format-toolbar" aria-label="Text formatting">
           <label>Font<select id="font-family">
             <option value="sans-serif">Sans serif</option>
@@ -41,7 +55,9 @@
           </div>
         </div>
         <textarea id="text-value" placeholder="Select text in the PDF"></textarea>
-        <button id="apply-button" type="button">Apply text</button>
+        <button id="apply-button" class="apply-button" type="button">Apply changes</button>
+        <button id="delete-button" class="delete-button" type="button">Delete selected text</button>
+        <div class="inspector-tip">Select text on the page to edit its content and appearance.</div>
       </aside>
     </main>
     <script type="module" src="/src/main.js"></script>
