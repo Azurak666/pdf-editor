@@ -10,6 +10,7 @@ import '@fontsource/poppins/400.css';
 import '@fontsource/poppins/700.css';
 import './styles.css';
 import { blockRectangle, mergeTextBlocks, textItemToBlock } from './text-layout.js';
+import { sanitizeRichHtml } from './rich-text.js';
 
 GlobalWorkerOptions.workerSrc = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
 
@@ -618,9 +619,36 @@ function updateSelectedStyle(property, value) {
   recordHistory();
   blocks.forEach((block) => {
     block[property] = value;
-    if (property === 'fontWeight' && value === '400') block.richHtml = '';
-    if (property === 'fontStyle' && value === 'normal') block.richHtml = '';
-    if (property === 'textDecoration' && value === 'none') block.richHtml = '';
+    if (property === 'fontWeight' && value === '400') {
+      block.richHtml = sanitizeRichHtml(block.richHtml || block.text, {
+        fontWeight: '400',
+        fontStyle: block.fontStyle,
+        textDecoration: block.textDecoration,
+        fontSize: block.fontSize,
+        fontFamily: block.fontFamily,
+        fontColor: block.fontColor,
+      });
+    }
+    if (property === 'fontStyle' && value === 'normal') {
+      block.richHtml = sanitizeRichHtml(block.richHtml || block.text, {
+        fontWeight: block.fontWeight,
+        fontStyle: 'normal',
+        textDecoration: block.textDecoration,
+        fontSize: block.fontSize,
+        fontFamily: block.fontFamily,
+        fontColor: block.fontColor,
+      });
+    }
+    if (property === 'textDecoration' && value === 'none') {
+      block.richHtml = sanitizeRichHtml(block.richHtml || block.text, {
+        fontWeight: block.fontWeight,
+        fontStyle: block.fontStyle,
+        textDecoration: 'none',
+        fontSize: block.fontSize,
+        fontFamily: block.fontFamily,
+        fontColor: block.fontColor,
+      });
+    }
     syncModified(block);
   });
   syncInspector();
@@ -654,7 +682,14 @@ function formatActiveEditor(property, value) {
   const block = selectedBlock();
   if (block) {
     block.text = editor.textContent || '';
-    block.richHtml = editor.innerHTML;
+    block.richHtml = sanitizeRichHtml(editor.innerHTML, {
+      fontWeight: block.fontWeight,
+      fontStyle: block.fontStyle,
+      textDecoration: block.textDecoration,
+      fontSize: block.fontSize,
+      fontFamily: block.fontFamily,
+      fontColor: block.fontColor,
+    });
     syncModified(block);
   }
   return true;
